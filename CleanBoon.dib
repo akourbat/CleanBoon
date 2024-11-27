@@ -48,23 +48,23 @@ Logic
 public static int MaxQueueSize = 10;
 public static int MaxTicks = 10;
 
-public static PriorityQueue<int,int> ComputeRegenTicks(PriorityQueue<int, int> acc, IList<BoonPeriodic> effects) 
+public static (int, PriorityQueue<int,int>) ComputeRegenTicks((int, PriorityQueue<int, int>) acc, IList<BoonPeriodic> effects) 
 {  
     if(effects is []) return acc;
-    else if(effects.Any(x => x.CancelEffect == true)) {acc.Clear(); return acc;}
+    else if(effects.Any(x => x.CancelEffect == true)) {acc.Item2.Clear(); return (0, acc.Item2);}
     else
     {   
         var range = effects
             .Select(x => Enumerable.Repeat((x.TickValue, x.TickValue), (int)(x.DurationMs/1000)))
             .SelectMany(x => x).ToList();
-        acc.EnqueueRange(range);
-        if(acc.Count > MaxQueueSize)
+        acc.Item2.EnqueueRange(range);
+        if(acc.Item2.Count > MaxQueueSize)
         {
-            var newRange = acc.UnorderedItems.OrderByDescending(x => x.Element).Take(MaxQueueSize).ToList();
-            acc.Clear();
-            acc.EnqueueRange(newRange);
+            var newRange = acc.Item2.UnorderedItems.OrderByDescending(x => x.Element).Take(MaxQueueSize).ToList();
+            acc.Item2.Clear();
+            acc.Item2.EnqueueRange(newRange);
         }
-        return acc; 
+        return (acc.Item2.Count, acc.Item2); 
     }
 }
 public static T InsertTimeElapsed<T>(TimeInterval<T> effect) where T: BoonBase
@@ -102,7 +102,7 @@ Regen Calculations
 #!csharp
 
 BoonBase tick4 = new BoonPeriodic ("first", BoonType.RESIL, 5500, 5);
-BoonBase tick5 = new BoonPeriodic("second", BoonType.RESIL, 11000, 10);
+BoonBase tick5 = new BoonPeriodic("second", BoonType.RESIL, 4000, 10);
 BoonBase tick6 = new BoonPeriodic("third", BoonType.RESIL, 3000, 8);
 BoonBase tick7 = new BoonBase("third", BoonType.ALAC, 4000);
 BoonBase tickCancel = new BoonPeriodic ("cancel", BoonType.RESIL, 0, 0) {CancelEffect = true};
@@ -123,10 +123,10 @@ var windowedR = sourcePQ.OfType<BoonPeriodic>()
                         .Publish(w => w.Take(1)
                                 .Select(x => new List<BoonPeriodic>{x})
                                 .Concat(w.Buffer(TimeSpan.FromSeconds(1), scheduler3)))
-                        .Scan(new PriorityQueue<int,int>(MaxQueueSize+5, new IntMaxComparer()), (acc, effects) =>
+                        .Scan((0, new PriorityQueue<int,int>(MaxQueueSize+5, new IntMaxComparer())), (acc, effects) =>
                                     ComputeRegenTicks(acc, effects))
-                        .Select(acc => acc.TryDequeue(out int tick, out int priority) ? tick : 0)
-                        .TakeUntil(x => x == 0)
+                        .Select(acc => acc.Item2.TryDequeue(out int tick, out int priority) ? (acc.Item2.Count, tick) : (0,0))
+                        .TakeUntil(x => x.Item1 == 0)
                         .Repeat();
                 
 var testObserver3 = scheduler3.Start(() => windowedR, 0L, 200L, TimeSpan.FromSeconds(30).Ticks);
@@ -134,9 +134,9 @@ var testObserver3 = scheduler3.Start(() => windowedR, 0L, 200L, TimeSpan.FromSec
 Console.WriteLine("Time is {0} ticks", scheduler3.Clock);
 Console.WriteLine("Received {0} notifications", testObserver3.Messages.Count);
 
-foreach (Recorded<Notification<int>> message in testObserver3.Messages)
+foreach (Recorded<Notification<(int, int)>> message in testObserver3.Messages)
 {
-    Console.WriteLine($"  {message.Value.Value}  -> recorded on {(message.Time/10000).ToString("N1", CultureInfo.InvariantCulture)} millisecond");
+    Console.WriteLine($"  {message.Value.Value.Item1} count for {message.Value.Value.Item2} HP -> recorded on {(message.Time/10000).ToString("N1", CultureInfo.InvariantCulture)} millisecond");
 }
 
 #!markdown
