@@ -1,0 +1,171 @@
+#!meta
+
+{"kernelInfo":{"defaultKernelName":"csharp","items":[{"aliases":[],"languageName":"csharp","name":"csharp"}]}}
+
+#!markdown
+
+Usings
+
+#!csharp
+
+#r "nuget: System.Reactive, 6.0.1"
+#r "nuget: Microsoft.Reactive.Testing, 6.0.1"
+#r "nuget: System.Reactive.Linq, 6.0.1"
+using System.Reactive;
+using System.Collections;
+using System.Collections.Generic;
+using System.Reactive.Linq;
+using System.Reactive.Concurrency;
+using Microsoft.Reactive.Testing;
+using System;
+using System.Linq;
+using System.Globalization;
+
+#!markdown
+
+Models
+
+#!csharp
+
+public enum MessageType{ BOON, CONDI}
+public enum BoonType{ MIGHT, FURY, PROT, STAB, QUICK, ALAC, SWIFT, REGEN, RESIL}
+
+public record MessageBase(string UserId, MessageType type);
+
+public record BoonBase(string UserId, BoonType Type, int DurationMs) : MessageBase(UserId, MessageType.BOON)
+{ 
+    public int Elapsed { get; set; }
+}
+public record BoonPeriodic(string UserID, BoonType Type, int DurationMs, int TickValue): BoonBase(UserID, Type, DurationMs);
+
+#!markdown
+
+Logic
+
+#!csharp
+
+public static int MaxQueueSize = 20;
+public static int MaxTicks = 10;
+
+public static PriorityQueue<int,int> ComputeRegenTicks(PriorityQueue<int, int> acc, IList<BoonPeriodic> effects) 
+{  
+    if(effects is []) return acc;
+    else
+    {
+        var range = effects
+            .Select(x => Enumerable.Repeat((x.TickValue, x.TickValue), (int)(x.DurationMs/1000)))
+            .SelectMany(x => x).ToList();
+        acc.EnqueueRange(range);
+        if(acc.Count > MaxQueueSize)
+        {
+            var newRange = acc.UnorderedItems.OrderByDescending(x => x.Element).Take(MaxQueueSize).ToList();
+            acc.Clear();
+            acc.EnqueueRange(newRange);
+        }
+        return acc; 
+    }
+}
+public static T InsertTimeElapsed<T>(TimeInterval<T> effect) where T: BoonBase
+{ 
+    effect.Deconstruct(out T value, out TimeSpan interval);
+    value.Elapsed = (int)interval.TotalMilliseconds;
+    return value; 
+}
+public static int ComputeActualDelay<T>(int acc, T effect, int cutoff) where T: BoonBase
+{
+    if (acc == 0 || effect.Elapsed > acc) 
+    {
+        return effect.DurationMs;
+    }
+    else{
+        var updated = acc - effect.Elapsed + effect.DurationMs;
+        return updated > cutoff ? cutoff : updated;
+    }
+}
+public static TimeSpan Round(this TimeSpan ts, TimeSpan rnd) {
+if (rnd == TimeSpan.Zero)
+    return ts;
+else {
+    var rndTicks = rnd.Ticks;
+    var ansTicks = ts.Ticks + Math.Sign(ts.Ticks) * rndTicks / 2;
+    return TimeSpan.FromTicks(ansTicks - ansTicks % rndTicks);
+    }
+}
+public static TimeSpan Round(this TimeSpan ts) => ts.Round(TimeSpan.FromSeconds(1));
+
+#!markdown
+
+Regen Calculations
+
+#!csharp
+
+BoonBase tick4 = new BoonPeriodic ("first", BoonType.RESIL, 5500, 4);
+BoonBase tick5 = new BoonPeriodic("second", BoonType.RESIL, 6000, 10);
+BoonBase tick6 = new BoonPeriodic("third", BoonType.RESIL, 3000, 8);
+BoonBase tick7 = new BoonBase("third", BoonType.ALAC, 4000);
+
+private const int MaxQueueSize = 20;
+private const int MaxTicks = 10;
+public class IntMaxComparer: IComparer<int> { public int Compare(int x, int y) => y.CompareTo(x); }
+
+var scheduler3 = new TestScheduler();
+var sourcePQ = scheduler3.CreateHotObservable(
+    new Recorded<Notification<BoonBase>>(300, Notification.CreateOnNext(tick4)),
+    new Recorded<Notification<BoonBase>>(TimeSpan.FromSeconds(1.4).Ticks, Notification.CreateOnNext(tick5)),
+    new Recorded<Notification<BoonBase>>(TimeSpan.FromSeconds(15).Ticks, Notification.CreateOnNext(tick6)),
+    new Recorded<Notification<BoonBase>>(TimeSpan.FromSeconds(3).Ticks, Notification.CreateOnNext(tick7)));
+
+var windowedR = sourcePQ.OfType<BoonPeriodic>()
+                        .Publish(w => w.Take(1)
+                                .Select(x => new List<BoonPeriodic>{x})
+                                .Concat(w.Buffer(TimeSpan.FromSeconds(1), scheduler3)))
+                        .Scan(new PriorityQueue<int,int>(MaxQueueSize+5, new IntMaxComparer()), (acc, effects) =>
+                                    ComputeRegenTicks(acc, effects))
+                        .Select(acc => acc.TryDequeue(out int tick, out int priority) ? tick : 0)
+                        .TakeUntil(x => x == 0)
+                        .Repeat();
+                
+var testObserver3 = scheduler3.Start(() => windowedR, 0L, 200L, TimeSpan.FromSeconds(30).Ticks);
+
+Console.WriteLine("Time is {0} ticks", scheduler3.Clock);
+Console.WriteLine("Received {0} notifications", testObserver3.Messages.Count);
+
+foreach (Recorded<Notification<int>> message in testObserver3.Messages)
+{
+    Console.WriteLine($"  {message.Value.Value}  -> recorded on {(message.Time/10000).ToString("N1", CultureInfo.InvariantCulture)} millisecond");
+}
+
+#!markdown
+
+Stacking Durations
+
+#!csharp
+
+var tick1 = new BoonBase("alex", BoonType.MIGHT, 3000);
+var tick2 = new BoonBase("dima", BoonType.FURY, 8000);
+var tick3 = new BoonBase("olga", BoonType.STAB, 4000);
+
+var scheduler = new TestScheduler();
+var source = scheduler.CreateHotObservable(
+    new Recorded<Notification<BoonBase>>(300, Notification.CreateOnNext(tick1)),
+    new Recorded<Notification<BoonBase>>(TimeSpan.FromSeconds(2).Ticks, Notification.CreateOnNext(tick2)),
+    new Recorded<Notification<BoonBase>>(TimeSpan.FromSeconds(16).Ticks, Notification.CreateOnNext(tick3)));
+
+var scanned = source
+            .TimeInterval(scheduler)
+            .Select(x => InsertTimeElapsed<BoonBase>(x))
+            .Scan( 0, (acc, x) => ComputeActualDelay(acc, x, 10000))
+            .Select(x => Observable.Return(("start", x))
+                .Concat(Observable.Return(("end", 0))
+                .Delay(TimeSpan.FromMilliseconds(x), scheduler)))
+            .Switch();
+
+var testObserver = scheduler.Start(() => scanned, 0L, 200L, TimeSpan.FromSeconds(40).Ticks);
+
+Console.WriteLine("Time is {0} ticks", scheduler.Clock);
+Console.WriteLine("Received {0} notifications", testObserver.Messages.Count);
+
+foreach (Recorded<Notification<(string, int)>> message in testObserver.Messages)
+{
+    Console.WriteLine($"  {message.Value.Value.Item1} for {message.Value.Value.Item2/1000} seconds -> recorded on {TimeSpan.FromTicks(message.Time).TotalMilliseconds} second");
+}
