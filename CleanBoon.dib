@@ -35,6 +35,7 @@ public record MessageBase(string UserId, MessageType type);
 public record BoonBase(string UserId, BoonType Type, int DurationMs) : MessageBase(UserId, MessageType.BOON)
 { 
     public int Elapsed { get; set; }
+    public bool CancelEffect {get; init;} = false;
 }
 public record BoonPeriodic(string UserID, BoonType Type, int DurationMs, int TickValue): BoonBase(UserID, Type, DurationMs);
 
@@ -44,14 +45,15 @@ Logic
 
 #!csharp
 
-public static int MaxQueueSize = 20;
+public static int MaxQueueSize = 10;
 public static int MaxTicks = 10;
 
 public static PriorityQueue<int,int> ComputeRegenTicks(PriorityQueue<int, int> acc, IList<BoonPeriodic> effects) 
 {  
     if(effects is []) return acc;
+    else if(effects.Any(x => x.CancelEffect == true)) {acc.Clear(); return acc;}
     else
-    {
+    {   
         var range = effects
             .Select(x => Enumerable.Repeat((x.TickValue, x.TickValue), (int)(x.DurationMs/1000)))
             .SelectMany(x => x).ToList();
@@ -99,10 +101,11 @@ Regen Calculations
 
 #!csharp
 
-BoonBase tick4 = new BoonPeriodic ("first", BoonType.RESIL, 5500, 4);
-BoonBase tick5 = new BoonPeriodic("second", BoonType.RESIL, 6000, 10);
+BoonBase tick4 = new BoonPeriodic ("first", BoonType.RESIL, 5500, 5);
+BoonBase tick5 = new BoonPeriodic("second", BoonType.RESIL, 11000, 10);
 BoonBase tick6 = new BoonPeriodic("third", BoonType.RESIL, 3000, 8);
 BoonBase tick7 = new BoonBase("third", BoonType.ALAC, 4000);
+BoonBase tickCancel = new BoonPeriodic ("cancel", BoonType.RESIL, 0, 0) {CancelEffect = true};
 
 private const int MaxQueueSize = 20;
 private const int MaxTicks = 10;
@@ -112,7 +115,8 @@ var scheduler3 = new TestScheduler();
 var sourcePQ = scheduler3.CreateHotObservable(
     new Recorded<Notification<BoonBase>>(300, Notification.CreateOnNext(tick4)),
     new Recorded<Notification<BoonBase>>(TimeSpan.FromSeconds(1.4).Ticks, Notification.CreateOnNext(tick5)),
-    new Recorded<Notification<BoonBase>>(TimeSpan.FromSeconds(15).Ticks, Notification.CreateOnNext(tick6)),
+    //new Recorded<Notification<BoonBase>>(TimeSpan.FromSeconds(8).Ticks, Notification.CreateOnNext(tickCancel)),
+    new Recorded<Notification<BoonBase>>(TimeSpan.FromSeconds(14.5).Ticks, Notification.CreateOnNext(tick6)),
     new Recorded<Notification<BoonBase>>(TimeSpan.FromSeconds(3).Ticks, Notification.CreateOnNext(tick7)));
 
 var windowedR = sourcePQ.OfType<BoonPeriodic>()
