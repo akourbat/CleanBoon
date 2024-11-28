@@ -38,6 +38,7 @@ public record BoonBase(string UserId, BoonType Type, int DurationMs) : MessageBa
     public bool CancelEffect {get; init;} = false;
 }
 public record BoonPeriodic(string UserID, BoonType Type, int DurationMs, int TickValue): BoonBase(UserID, Type, DurationMs);
+public record BoonStack(string UserID, BoonType Type, int DurationMs, int StackSize): BoonBase(UserID, Type, DurationMs);
 
 #!markdown
 
@@ -75,7 +76,8 @@ public static T InsertTimeElapsed<T>(TimeInterval<T> effect) where T: BoonBase
 }
 public static int ComputeActualDelay<T>(int acc, T effect, int cutoff) where T: BoonBase
 {
-    if (acc == 0 || effect.Elapsed > acc) 
+    if(effect.CancelEffect is true) return 0;
+    else if (acc == 0 || effect.Elapsed > acc) 
     {
         return effect.DurationMs;
     }
@@ -102,7 +104,7 @@ Regen Calculations
 #!csharp
 
 BoonBase tick4 = new BoonPeriodic ("first", BoonType.RESIL, 5500, 5);
-BoonBase tick5 = new BoonPeriodic("second", BoonType.RESIL, 14000, 10);
+BoonBase tick5 = new BoonPeriodic("second", BoonType.RESIL, 6000, 10);
 BoonBase tick6 = new BoonPeriodic("third", BoonType.RESIL, 3000, 8);
 BoonBase tick7 = new BoonBase("third", BoonType.ALAC, 4000);
 BoonBase tickCancel = new BoonPeriodic ("cancel", BoonType.RESIL, 0, 0) {CancelEffect = true};
@@ -119,7 +121,8 @@ var sourcePQ = scheduler3.CreateHotObservable(
     new Recorded<Notification<BoonBase>>(TimeSpan.FromSeconds(14.5).Ticks, Notification.CreateOnNext(tick6)),
     new Recorded<Notification<BoonBase>>(TimeSpan.FromSeconds(3).Ticks, Notification.CreateOnNext(tick7)));
 
-var windowedR = sourcePQ.OfType<BoonPeriodic>()
+// Single pipeline version with .Repeat()
+var singlePipeline = sourcePQ.OfType<BoonPeriodic>()
                         .Publish(w => w.Take(1)
                                 .Select(x => new List<BoonPeriodic>{x})
                                 .Concat(w.Buffer(TimeSpan.FromSeconds(1), scheduler3)))
@@ -128,8 +131,20 @@ var windowedR = sourcePQ.OfType<BoonPeriodic>()
                         .Select(acc => acc.TryDequeue(out int tick, out int priority) ? (acc.Count, tick) : (0,0))
                         .TakeUntil(x => x.Item1 == 0)
                         .Repeat();
+
+//Version with Windows - keeps doing buffers (which is incorrect)
+var windowed = sourcePQ.OfType<BoonPeriodic>()
+                        .Publish(w => w.Take(1)
+                                .Select(x => new List<BoonPeriodic>{x})
+                                .Concat(w.Buffer(TimeSpan.FromSeconds(1), scheduler3)))
+                        .Scan(new PriorityQueue<int,int>(MaxQueueSize+5, new IntMaxComparer()), (acc, effects) =>
+                                    ComputeRegenTicks(acc, effects))
+                        .Select(acc => acc.TryDequeue(out int tick, out int priority) ? (acc.Count, tick) : (0,0))
+                        .Publish().RefCount();
+
+var ver2 = sourcePQ.Window(windowed.Where(x => x.Item1 == 0)).SelectMany(w => windowed);
                 
-var testObserver3 = scheduler3.Start(() => windowedR, 0L, 200L, TimeSpan.FromSeconds(30).Ticks);
+var testObserver3 = scheduler3.Start(() => singlePipeline, 0L, 200L, TimeSpan.FromSeconds(30).Ticks);
 
 Console.WriteLine("Time is {0} ticks", scheduler3.Clock);
 Console.WriteLine("Received {0} notifications", testObserver3.Messages.Count);
@@ -148,11 +163,13 @@ Stacking Durations
 var tick1 = new BoonBase("alex", BoonType.MIGHT, 3000);
 var tick2 = new BoonBase("dima", BoonType.FURY, 8000);
 var tick3 = new BoonBase("olga", BoonType.STAB, 4000);
+var cancelF = new BoonBase("admin", BoonType.STAB, 0){CancelEffect = true};
 
 var scheduler = new TestScheduler();
 var source = scheduler.CreateHotObservable(
     new Recorded<Notification<BoonBase>>(300, Notification.CreateOnNext(tick1)),
     new Recorded<Notification<BoonBase>>(TimeSpan.FromSeconds(2).Ticks, Notification.CreateOnNext(tick2)),
+    new Recorded<Notification<BoonBase>>(TimeSpan.FromSeconds(8).Ticks, Notification.CreateOnNext(cancelF)),
     new Recorded<Notification<BoonBase>>(TimeSpan.FromSeconds(16).Ticks, Notification.CreateOnNext(tick3)));
 
 var scanned = source
@@ -173,3 +190,41 @@ foreach (Recorded<Notification<(string, int)>> message in testObserver.Messages)
 {
     Console.WriteLine($"  {message.Value.Value.Item1} for {message.Value.Value.Item2/1000} seconds -> recorded on {TimeSpan.FromTicks(message.Time).TotalMilliseconds} second");
 }
+
+#!markdown
+
+Stacking Intensity
+
+#!csharp
+
+BoonBase tick10 = new BoonStack("alex", BoonType.MIGHT, 3000, 15);
+BoonBase tick12 = new BoonStack("dima", BoonType.FURY, 8000, 18);
+BoonBase tick14 = new BoonStack("olga", BoonType.STAB, 4000, 10);
+BoonBase tickCancel = new BoonStack ("cancel", BoonType.RESIL, 0, 0) {CancelEffect = true};
+
+var schedulerStack = new TestScheduler();
+var sourceStacked = schedulerStack.CreateHotObservable(
+    new Recorded<Notification<BoonBase>>(300, Notification.CreateOnNext(tick10)),
+    new Recorded<Notification<BoonBase>>(TimeSpan.FromSeconds(1.5).Ticks, Notification.CreateOnNext(tick12)),
+    new Recorded<Notification<BoonBase>>(TimeSpan.FromSeconds(4.8).Ticks, Notification.CreateOnNext(tickCancel)),
+    new Recorded<Notification<BoonBase>>(TimeSpan.FromSeconds(6).Ticks, Notification.CreateOnNext(tick14)));
+
+var sourcePublished = sourceStacked.Publish().RefCount();
+
+var withCancel = sourcePublished.OfType<BoonStack>()
+                    .Where(x => x.CancelEffect is true)
+                    .Select(x => x)
+                    .Publish().RefCount();
+
+var stacked = sourcePublished.OfType<BoonStack>()
+                .Window(withCancel)
+                .SelectMany(w => w.SelectMany(x => Observable.Return(x.StackSize)
+                                    .Concat(Observable.Return(-1* x.StackSize)
+                                        .Delay(TimeSpan.FromMilliseconds(x.DurationMs), schedulerStack)))
+                                    .Scan(0, (acc, stacks) => acc + stacks)
+                                    .Select( x => x > 25 ? 25 : x )
+                                    .Append(0)
+                                    .TakeUntil(withCancel));
+                    
+var testObserverStacked = schedulerStack.Start(() => stacked, 0L, 200L, TimeSpan.FromSeconds(25).Ticks); 
+testObserverStacked.Messages           
