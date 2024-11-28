@@ -127,26 +127,35 @@ var sourcePQ = scheduler3.CreateHotObservable(
 
 var sourcePQpub = sourcePQ.Publish().RefCount();
 
-// Single pipeline version with .Repeat()
+var cancelRegenObs = sourcePQpub.OfType<CancelBoon>()
+                        .Where(x => x.Type == BoonType.REGEN)
+                        .Select(x => x)
+                        .Publish().RefCount();
+
 var singlePipeline = sourcePQpub.OfType<BoonPeriodic>()
-                        .Publish(w => w.Take(1)
-                                .Select(x => new List<BoonPeriodic>{x})
-                                .Concat(w.Buffer(TimeSpan.FromSeconds(1), scheduler3)))
-                        .Scan(new PriorityQueue<int,int>(MaxQueueSize+5, new IntMaxComparer()), (acc, effects) =>
-                                    ComputeRegenTicks(acc, effects))
-                        .Select(acc => acc.TryDequeue(out int tick, out int priority) ? (acc.Count, tick) : (0,0))
-                        .TakeUntil(x => x.Item1 == 0)
-                        .Repeat();
+                        .Window(cancelRegenObs)
+                        .SelectMany(w =>
+                            w.Publish(w => w.Take(1)
+                                    .Select(x => new List<BoonPeriodic>{x})
+                                    .Concat(w.Buffer(TimeSpan.FromSeconds(1), scheduler3)))
+                            .Scan(new PriorityQueue<int,int>(MaxQueueSize+5, new IntMaxComparer()), (acc, effects) =>
+                                        ComputeRegenTicks(acc, effects))
+                            .Select(acc => acc.TryDequeue(out int tick, out int priority) ? (acc.Count, tick) : (0,0))
+                            .TakeUntil(x => x.Item1 == 0)
+                            .StartWith((0,0))
+                            .Repeat()
+                            .TakeUntil(cancelRegenObs));
                 
 var testObserver3 = scheduler3.Start(() => singlePipeline, 0L, 200L, TimeSpan.FromSeconds(30).Ticks);
 
 Console.WriteLine("Time is {0} ticks", scheduler3.Clock);
 Console.WriteLine("Received {0} notifications", testObserver3.Messages.Count);
 
-foreach (Recorded<Notification<(int, int)>> message in testObserver3.Messages)
-{
-    Console.WriteLine($"  {message.Value.Value.Item1} count for {message.Value.Value.Item2} HP -> recorded on {(message.Time/10000).ToString("N1", CultureInfo.InvariantCulture)} millisecond");
-}
+// foreach (Recorded<Notification<(int, int)>> message in testObserver3.Messages)
+// {
+//     Console.WriteLine($"  {message.Value.Value.Item1} count for {message.Value.Value.Item2} HP -> recorded on {(message.Time/10000).ToString("N1", CultureInfo.InvariantCulture)} millisecond");
+// }
+testObserver3.Messages
 
 #!markdown
 
