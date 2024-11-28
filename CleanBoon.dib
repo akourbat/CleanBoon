@@ -40,11 +40,11 @@ public record BoonBase(string UserId, BoonType Type) : MessageBase(UserId, Messa
 }
 public record CancelBoon(string UserId, BoonType Type): BoonBase(UserId, Type);
 
-public record BoonEffect(string UserID, BoonType Type, int DurationMs) : BoonBase(UserID, Type)
+public record BoonEffect(string UserID, BoonType Type, int DurationMs) : BoonBase(UserID, Type);
 
-public record BoonPeriodic(string UserID, BoonType Type, int DurationMs, int TickValue): BoonBase(UserID, Type);
+public record BoonPeriodic(string UserID, BoonType Type, int DurationMs, int TickValue): BoonEffect(UserID, Type, DurationMs);
 
-public record BoonStack(string UserID, BoonType Type, int DurationMs, int StackSize): BoonBase(UserID, Type);
+public record BoonStack(string UserID, BoonType Type, int DurationMs, int StackSize): BoonEffect(UserID, Type, DurationMs);
 
 #!markdown
 
@@ -79,7 +79,7 @@ public static T InsertTimeElapsed<T>(TimeInterval<T> effect) where T: BoonBase
     value.Elapsed = (int)interval.TotalMilliseconds;
     return value; 
 }
-public static int ComputeActualDelay<T>(int acc, T effect, int cutoff) where T: BoonBase
+public static int ComputeActualDelay<T>(int acc, T effect, int cutoff) where T: BoonEffect
 {
     if (acc == 0 || effect.Elapsed > acc) 
     {
@@ -107,11 +107,11 @@ Regen Calculations
 
 #!csharp
 
-BoonBase tick4 = new BoonPeriodic ("first", BoonType.RESIL, 5500, 5);
-BoonBase tick5 = new BoonPeriodic("second", BoonType.RESIL, 6000, 10);
-BoonBase tick6 = new BoonPeriodic("third", BoonType.RESIL, 3000, 8);
-BoonBase tick7 = new BoonBase("third", BoonType.ALAC, 4000);
-BoonBase tickCancel = new BoonPeriodic ("cancel", BoonType.RESIL, 0, 0) {CancelEffect = true};
+MessageBase tick4 = new BoonPeriodic ("first", BoonType.REGEN, 5500, 5);
+MessageBase tick5 = new BoonPeriodic("second", BoonType.REGEN, 6000, 10);
+MessageBase tick6 = new BoonPeriodic("third", BoonType.REGEN, 3000, 8);
+MessageBase tick7 = new BoonPeriodic("fourth", BoonType.REGEN, 7000, 4);
+MessageBase cancelRegen = new CancelBoon ("cancel", BoonType.REGEN);
 
 private const int MaxQueueSize = 20;
 private const int MaxTicks = 10;
@@ -119,14 +119,16 @@ public class IntMaxComparer: IComparer<int> { public int Compare(int x, int y) =
 
 var scheduler3 = new TestScheduler();
 var sourcePQ = scheduler3.CreateHotObservable(
-    new Recorded<Notification<BoonBase>>(300, Notification.CreateOnNext(tick4)),
-    new Recorded<Notification<BoonBase>>(TimeSpan.FromSeconds(1.4).Ticks, Notification.CreateOnNext(tick5)),
-    //new Recorded<Notification<BoonBase>>(TimeSpan.FromSeconds(6).Ticks, Notification.CreateOnNext(tickCancel)),
-    new Recorded<Notification<BoonBase>>(TimeSpan.FromSeconds(14.5).Ticks, Notification.CreateOnNext(tick6)),
-    new Recorded<Notification<BoonBase>>(TimeSpan.FromSeconds(3).Ticks, Notification.CreateOnNext(tick7)));
+    new Recorded<Notification<MessageBase>>(300, Notification.CreateOnNext(tick4)),
+    new Recorded<Notification<MessageBase>>(TimeSpan.FromSeconds(1.4).Ticks, Notification.CreateOnNext(tick5)),
+    new Recorded<Notification<MessageBase>>(TimeSpan.FromSeconds(6).Ticks, Notification.CreateOnNext(cancelRegen)),
+    new Recorded<Notification<MessageBase>>(TimeSpan.FromSeconds(14.5).Ticks, Notification.CreateOnNext(tick6)),
+    new Recorded<Notification<MessageBase>>(TimeSpan.FromSeconds(3).Ticks, Notification.CreateOnNext(tick7)));
+
+var sourcePQpub = sourcePQ.Publish().RefCount();
 
 // Single pipeline version with .Repeat()
-var singlePipeline = sourcePQ.OfType<BoonPeriodic>()
+var singlePipeline = sourcePQpub.OfType<BoonPeriodic>()
                         .Publish(w => w.Take(1)
                                 .Select(x => new List<BoonPeriodic>{x})
                                 .Concat(w.Buffer(TimeSpan.FromSeconds(1), scheduler3)))
@@ -135,18 +137,6 @@ var singlePipeline = sourcePQ.OfType<BoonPeriodic>()
                         .Select(acc => acc.TryDequeue(out int tick, out int priority) ? (acc.Count, tick) : (0,0))
                         .TakeUntil(x => x.Item1 == 0)
                         .Repeat();
-
-//Version with Windows - keeps doing buffers (which is incorrect)
-var windowed = sourcePQ.OfType<BoonPeriodic>()
-                        .Publish(w => w.Take(1)
-                                .Select(x => new List<BoonPeriodic>{x})
-                                .Concat(w.Buffer(TimeSpan.FromSeconds(1), scheduler3)))
-                        .Scan(new PriorityQueue<int,int>(MaxQueueSize+5, new IntMaxComparer()), (acc, effects) =>
-                                    ComputeRegenTicks(acc, effects))
-                        .Select(acc => acc.TryDequeue(out int tick, out int priority) ? (acc.Count, tick) : (0,0))
-                        .Publish().RefCount();
-
-var ver2 = sourcePQ.Window(windowed.Where(x => x.Item1 == 0)).SelectMany(w => windowed);
                 
 var testObserver3 = scheduler3.Start(() => singlePipeline, 0L, 200L, TimeSpan.FromSeconds(30).Ticks);
 
@@ -164,26 +154,36 @@ Stacking Durations
 
 #!csharp
 
-MessageBase tick1 = new BoonBase("alex", BoonType.FURY, 3000);
-MessageBase tick2 = new BoonBase("dima", BoonType.FURY, 8000);
-MessageBase tick3 = new BoonBase("olga", BoonType.FURY, 4000);
-MessageBase cancelFury = new CancelEffect("admin", MessageType.BOON, BoonType.FURY);
+MessageBase tick1 = new BoonEffect("alex", BoonType.FURY, 3000);
+MessageBase tick2 = new BoonEffect("dima", BoonType.FURY, 8000);
+MessageBase tick3 = new BoonEffect("olga", BoonType.FURY, 4000);
+MessageBase cancelFury = new CancelBoon("admin", BoonType.FURY);
 
 var scheduler = new TestScheduler();
-var source = scheduler.CreateHotObservable(
+var sourceFury = scheduler.CreateHotObservable(
     new Recorded<Notification<MessageBase>>(300, Notification.CreateOnNext(tick1)),
     new Recorded<Notification<MessageBase>>(TimeSpan.FromSeconds(2).Ticks, Notification.CreateOnNext(tick2)),
-    new Recorded<Notification<MessageBase>>(TimeSpan.FromSeconds(8).Ticks, Notification.CreateOnNext(cancelFury)),
+    new Recorded<Notification<MessageBase>>(TimeSpan.FromSeconds(6.25).Ticks, Notification.CreateOnNext(cancelFury)),
     new Recorded<Notification<MessageBase>>(TimeSpan.FromSeconds(16).Ticks, Notification.CreateOnNext(tick3)));
 
-var scanned = source.OfType<BoonBase>()
-            .TimeInterval(scheduler)
-            .Select(x => InsertTimeElapsed<BoonBase>(x))
-            .Scan( 0, (acc, x) => ComputeActualDelay(acc, x, 10000))
-            .Select(x => Observable.Return(("start", x))
-                .Concat(Observable.Return(("end", 0))
-                .Delay(TimeSpan.FromMilliseconds(x), scheduler)))
-            .Switch();
+var publishedFury = sourceFury.Publish().RefCount();
+
+var cancelFuryObs = publishedFury.OfType<CancelBoon>()
+                    .Where(x => x.Type == BoonType.FURY)
+                    .Select(x => x)
+                    .Publish().RefCount();
+
+var scanned = publishedFury.OfType<BoonEffect>()
+                .Window(cancelFuryObs)
+                .SelectMany(w => w.TimeInterval(scheduler)
+                            .Select(x => InsertTimeElapsed<BoonEffect>(x))
+                            .Scan( 0, (acc, x) => ComputeActualDelay(acc, x, 10000))
+                            .Select(x => Observable.Return(("start", x))
+                                .Concat(Observable.Return(("end", 0))
+                                    .Delay(TimeSpan.FromMilliseconds(x), scheduler)))
+                            .Switch()
+                            .StartWith(("new window",0))
+                            .TakeUntil(cancelFuryObs));
 
 var testObserver = scheduler.Start(() => scanned, 0L, 200L, TimeSpan.FromSeconds(40).Ticks);
 
@@ -204,7 +204,7 @@ Stacking Intensity
 MessageBase tick10 = new BoonStack("alex", BoonType.MIGHT, 3000, 15);
 MessageBase tick12 = new BoonStack("dima", BoonType.MIGHT, 8000, 18);
 MessageBase tick14 = new BoonStack("olga", BoonType.MIGHT, 4000, 10);
-MessageBase cancelMight = new CancelEffect ("cancel", MessageType.BOON, BoonType.MIGHT);
+MessageBase cancelMight = new CancelBoon ("cancel", BoonType.MIGHT);
 
 var schedulerStack = new TestScheduler();
 var sourceStacked = schedulerStack.CreateHotObservable(
@@ -215,8 +215,8 @@ var sourceStacked = schedulerStack.CreateHotObservable(
 
 var sourcePublished = sourceStacked.Publish().RefCount();
 
-var withCancel = sourcePublished.OfType<CancelEffect>()
-                    .Where(x => x.Boon == BoonType.MIGHT)
+var withCancel = sourcePublished.OfType<CancelBoon>()
+                    .Where(x => x.Type == BoonType.MIGHT)
                     .Select(x => x)
                     .Publish().RefCount();
 
