@@ -32,17 +32,23 @@ public enum BoonType{ MIGHT, FURY, PROT, STAB, QUICK, ALAC, SWIFT, REGEN, RESIL}
 
 public record MessageBase(string UserId, MessageType type);
 
-public record BoonBase(string UserId, BoonType Type, int DurationMs) : MessageBase(UserId, MessageType.BOON)
+
+
+public record BoonBase(string UserId, BoonType Type) : MessageBase(UserId, MessageType.BOON)
 { 
     public int Elapsed { get; set; }
-    public bool CancelEffect {get; init;} = false;
 }
-public record BoonPeriodic(string UserID, BoonType Type, int DurationMs, int TickValue): BoonBase(UserID, Type, DurationMs);
-public record BoonStack(string UserID, BoonType Type, int DurationMs, int StackSize): BoonBase(UserID, Type, DurationMs);
+public record CancelBoon(string UserId, BoonType Type): BoonBase(UserId, Type);
+
+public record BoonEffect(string UserID, BoonType Type, int DurationMs) : BoonBase(UserID, Type)
+
+public record BoonPeriodic(string UserID, BoonType Type, int DurationMs, int TickValue): BoonBase(UserID, Type);
+
+public record BoonStack(string UserID, BoonType Type, int DurationMs, int StackSize): BoonBase(UserID, Type);
 
 #!markdown
 
-Logic
+Shared Logic
 
 #!csharp
 
@@ -52,7 +58,6 @@ public static int MaxTicks = 10;
 public static PriorityQueue<int,int> ComputeRegenTicks(PriorityQueue<int, int> acc, IList<BoonPeriodic> effects) 
 {  
     if(effects is []) return acc;
-    else if(effects.Any(x => x.CancelEffect == true)) {acc.Clear(); return acc;}
     else
     {   
         var range = effects
@@ -76,8 +81,7 @@ public static T InsertTimeElapsed<T>(TimeInterval<T> effect) where T: BoonBase
 }
 public static int ComputeActualDelay<T>(int acc, T effect, int cutoff) where T: BoonBase
 {
-    if(effect.CancelEffect is true) return 0;
-    else if (acc == 0 || effect.Elapsed > acc) 
+    if (acc == 0 || effect.Elapsed > acc) 
     {
         return effect.DurationMs;
     }
@@ -160,19 +164,19 @@ Stacking Durations
 
 #!csharp
 
-var tick1 = new BoonBase("alex", BoonType.MIGHT, 3000);
-var tick2 = new BoonBase("dima", BoonType.FURY, 8000);
-var tick3 = new BoonBase("olga", BoonType.STAB, 4000);
-var cancelF = new BoonBase("admin", BoonType.STAB, 0){CancelEffect = true};
+MessageBase tick1 = new BoonBase("alex", BoonType.FURY, 3000);
+MessageBase tick2 = new BoonBase("dima", BoonType.FURY, 8000);
+MessageBase tick3 = new BoonBase("olga", BoonType.FURY, 4000);
+MessageBase cancelFury = new CancelEffect("admin", MessageType.BOON, BoonType.FURY);
 
 var scheduler = new TestScheduler();
 var source = scheduler.CreateHotObservable(
-    new Recorded<Notification<BoonBase>>(300, Notification.CreateOnNext(tick1)),
-    new Recorded<Notification<BoonBase>>(TimeSpan.FromSeconds(2).Ticks, Notification.CreateOnNext(tick2)),
-    new Recorded<Notification<BoonBase>>(TimeSpan.FromSeconds(8).Ticks, Notification.CreateOnNext(cancelF)),
-    new Recorded<Notification<BoonBase>>(TimeSpan.FromSeconds(16).Ticks, Notification.CreateOnNext(tick3)));
+    new Recorded<Notification<MessageBase>>(300, Notification.CreateOnNext(tick1)),
+    new Recorded<Notification<MessageBase>>(TimeSpan.FromSeconds(2).Ticks, Notification.CreateOnNext(tick2)),
+    new Recorded<Notification<MessageBase>>(TimeSpan.FromSeconds(8).Ticks, Notification.CreateOnNext(cancelFury)),
+    new Recorded<Notification<MessageBase>>(TimeSpan.FromSeconds(16).Ticks, Notification.CreateOnNext(tick3)));
 
-var scanned = source
+var scanned = source.OfType<BoonBase>()
             .TimeInterval(scheduler)
             .Select(x => InsertTimeElapsed<BoonBase>(x))
             .Scan( 0, (acc, x) => ComputeActualDelay(acc, x, 10000))
@@ -197,22 +201,22 @@ Stacking Intensity
 
 #!csharp
 
-BoonBase tick10 = new BoonStack("alex", BoonType.MIGHT, 3000, 15);
-BoonBase tick12 = new BoonStack("dima", BoonType.FURY, 8000, 18);
-BoonBase tick14 = new BoonStack("olga", BoonType.STAB, 4000, 10);
-BoonBase tickCancel = new BoonStack ("cancel", BoonType.RESIL, 0, 0) {CancelEffect = true};
+MessageBase tick10 = new BoonStack("alex", BoonType.MIGHT, 3000, 15);
+MessageBase tick12 = new BoonStack("dima", BoonType.MIGHT, 8000, 18);
+MessageBase tick14 = new BoonStack("olga", BoonType.MIGHT, 4000, 10);
+MessageBase cancelMight = new CancelEffect ("cancel", MessageType.BOON, BoonType.MIGHT);
 
 var schedulerStack = new TestScheduler();
 var sourceStacked = schedulerStack.CreateHotObservable(
-    new Recorded<Notification<BoonBase>>(300, Notification.CreateOnNext(tick10)),
-    new Recorded<Notification<BoonBase>>(TimeSpan.FromSeconds(1.5).Ticks, Notification.CreateOnNext(tick12)),
-    new Recorded<Notification<BoonBase>>(TimeSpan.FromSeconds(4.8).Ticks, Notification.CreateOnNext(tickCancel)),
-    new Recorded<Notification<BoonBase>>(TimeSpan.FromSeconds(6).Ticks, Notification.CreateOnNext(tick14)));
+    new Recorded<Notification<MessageBase>>(300, Notification.CreateOnNext(tick10)),
+    new Recorded<Notification<MessageBase>>(TimeSpan.FromSeconds(1.5).Ticks, Notification.CreateOnNext(tick12)),
+    new Recorded<Notification<MessageBase>>(TimeSpan.FromSeconds(4.8).Ticks, Notification.CreateOnNext(cancelMight)),
+    new Recorded<Notification<MessageBase>>(TimeSpan.FromSeconds(6).Ticks, Notification.CreateOnNext(tick14)));
 
 var sourcePublished = sourceStacked.Publish().RefCount();
 
-var withCancel = sourcePublished.OfType<BoonStack>()
-                    .Where(x => x.CancelEffect is true)
+var withCancel = sourcePublished.OfType<CancelEffect>()
+                    .Where(x => x.Boon == BoonType.MIGHT)
                     .Select(x => x)
                     .Publish().RefCount();
 
@@ -223,7 +227,7 @@ var stacked = sourcePublished.OfType<BoonStack>()
                                         .Delay(TimeSpan.FromMilliseconds(x.DurationMs), schedulerStack)))
                                     .Scan(0, (acc, stacks) => acc + stacks)
                                     .Select( x => x > 25 ? 25 : x )
-                                    .Append(0)
+                                    .StartWith(0)
                                     .TakeUntil(withCancel));
                     
 var testObserverStacked = schedulerStack.Start(() => stacked, 0L, 200L, TimeSpan.FromSeconds(25).Ticks); 
