@@ -1,0 +1,95 @@
+#!meta
+
+{"kernelInfo":{"defaultKernelName":"csharp","items":[{"aliases":[],"languageName":"csharp","name":"csharp"}]}}
+
+#!markdown
+
+Usings
+
+#!csharp
+
+#r "nuget: System.Reactive, 6.0.1"
+#r "nuget: Microsoft.Reactive.Testing, 6.0.1"
+#r "nuget: System.Reactive.Linq, 6.0.1"
+#r "nuget: DynamicData"
+using System.Reactive;
+using System.Collections;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Reactive.Linq;
+using System.Reactive.Concurrency;
+using Microsoft.Reactive.Testing;
+using System;
+using DynamicData;
+using DynamicData.Aggregation;
+
+#!markdown
+
+Models
+
+#!csharp
+
+public record SomeStuff(int Id, int Data);
+
+public class PlayerData
+{
+    public SourceCache<SomeStuff, int> _cache = new SourceCache<SomeStuff, int>(s => s.Id); //Let's say it countains current buffs
+    public SourceCache<(int,int), int> _talentCache = new(t => t.Item1);
+    public Dictionary<int, Func<PlayerData, TalentOutcome>> dict = new();
+
+    public ReadOnlyObservableCollection<TalentOutcome> list;
+
+    public PlayerData()
+    {
+        this._talentCache.Connect()
+            .Transform(t => this.dict[t.Item1].Invoke(this))
+            .Bind(out this.list)
+            .DisposeMany()
+            .Subscribe();
+    }
+}
+public abstract class TalentOutcome {}
+
+public class TalentOutcomeInt: TalentOutcome, IDisposable
+{
+    private int value;
+    public string Message => value == 3 ? "Wow" : "Eww";
+    IDisposable sub;
+    
+    public TalentOutcomeInt(PlayerData data, IObservable<int> obs) =>
+             this.sub = obs.Subscribe(x => this.value = x);
+
+    public void Dispose() => sub.Dispose();
+}
+public class TalentOutcomeBool:  TalentOutcome, IDisposable
+{
+    private bool value;
+    public string Message => value ? "Wow" : "Eww";
+    IDisposable sub;
+    
+    public TalentOutcomeBool(PlayerData data, IObservable<bool> obs) =>
+             this.sub = obs.Subscribe(x => this.value = x );
+
+    public void Dispose() => sub.Dispose();
+}
+
+var alex = new PlayerData();
+
+Func<PlayerData, TalentOutcome> myFuncInt = (PlayerData pd) =>  new TalentOutcomeInt(pd, pd._cache.Connect().Count());
+Func<PlayerData, TalentOutcome> myFuncBool = (PlayerData pd) =>  new TalentOutcomeBool(pd, pd._cache.Connect().Count().Select(x => x > 3));
+alex.dict.Add(222, myFuncInt);
+alex.dict.Add(333, myFuncBool);
+
+var one = new SomeStuff(1, 10);
+var two = new SomeStuff(2, 15);
+var three = new SomeStuff(3, 20);
+var four = new SomeStuff(4, 25);
+alex._cache.AddOrUpdate(one);
+alex._cache.AddOrUpdate(two);
+alex._cache.AddOrUpdate(three);
+alex._cache.AddOrUpdate(four);
+
+alex._talentCache.AddOrUpdate((222,222));
+alex._talentCache.AddOrUpdate((333,333));
+
+alex.list
