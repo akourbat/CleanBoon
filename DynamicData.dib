@@ -9,7 +9,6 @@ Usings
 #!csharp
 
 #r "nuget: System.Reactive, 6.0.1"
-#r "nuget: Microsoft.Reactive.Testing, 6.0.1"
 #r "nuget: System.Reactive.Linq, 6.0.1"
 #r "nuget: DynamicData"
 using System.Reactive;
@@ -18,10 +17,11 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Reactive.Linq;
 using System.Reactive.Concurrency;
-using Microsoft.Reactive.Testing;
+//using Microsoft.Reactive.Testing;
 using System;
 using DynamicData;
 using DynamicData.Aggregation;
+using DynamicData.Binding;
 
 #!markdown
 
@@ -35,50 +35,65 @@ public class PlayerData
 {
     public SourceCache<SomeStuff, int> _cache = new SourceCache<SomeStuff, int>(s => s.Id); //Let's say it countains current buffs
     public SourceCache<(int,int), int> _talentCache = new(t => t.Item1);
-    public Dictionary<int, Func<PlayerData, TalentOutcome>> dict = new();
+    public Dictionary<int, Func<PlayerData, TalentOutcome[]>> dict = new();
 
     public ReadOnlyObservableCollection<TalentOutcome> list;
 
     public PlayerData()
     {
         this._talentCache.Connect()
-            .Transform(t => this.dict[t.Item1].Invoke(this))
+            .TransformMany(t => this.dict[t.Item1].Invoke(this), c => c.ID)
+            .AutoRefresh(x => x.Value)
             .Bind(out this.list)
             .DisposeMany()
             .Subscribe();
     }
 }
-public abstract class TalentOutcome {}
 
-public class TalentOutcomeInt: TalentOutcome, IDisposable
+public enum ATR {VITALITY, TOUGHNESS, POWER, PRECISION, CONDI_DMG, EXPERTISE, CONCENTRATION, SPEED};
+public record TalentAtr( ATR Atr, int Value);
+
+public class TalentOutcome: AbstractNotifyPropertyChanged, IDisposable
 {
-    private int value;
-    public string Message => value == 3 ? "Wow" : "Eww";
-    IDisposable sub;
+    public string ID {get; set;}
+    private TalentAtr _value;
+    public TalentAtr Value { get => _value; set => SetAndRaise(ref _value, value); }
     
-    public TalentOutcomeInt(PlayerData data, IObservable<int> obs) =>
-             this.sub = obs.Subscribe(x => this.value = x);
-
-    public void Dispose() => sub.Dispose();
-}
-public class TalentOutcomeBool:  TalentOutcome, IDisposable
-{
-    private bool value;
-    public string Message => value ? "Wow" : "Eww";
+    public TalentOutcome(string Id, PlayerData data, IObservable<TalentAtr> obs)
+    {       
+        this.ID = Id;
+        this.sub = obs.Subscribe(x => this.Value = x);
+    }
     IDisposable sub;
-    
-    public TalentOutcomeBool(PlayerData data, IObservable<bool> obs) =>
-             this.sub = obs.Subscribe(x => this.value = x );
-
     public void Dispose() => sub.Dispose();
 }
 
 var alex = new PlayerData();
 
-Func<PlayerData, TalentOutcome> myFuncInt = (PlayerData pd) =>  new TalentOutcomeInt(pd, pd._cache.Connect().Count());
-Func<PlayerData, TalentOutcome> myFuncBool = (PlayerData pd) =>  new TalentOutcomeBool(pd, pd._cache.Connect().Count().Select(x => x > 3));
-alex.dict.Add(222, myFuncInt);
-alex.dict.Add(333, myFuncBool);
+Func<PlayerData, TalentOutcome[]> myFuncSwift = (PlayerData pd) => {
+            var obs = pd._cache.Connect()
+                .StartWithEmpty()
+                .Count();
+                
+            var result1 = new TalentOutcome("One", pd, obs.Select(c => new TalentAtr(ATR.SPEED, c*5)));
+            var result2 = new TalentOutcome("Two", pd, obs.Select(c => new TalentAtr(ATR.EXPERTISE, c*2)));
+            return [result1, result2];
+            };
+                
+Func<PlayerData, TalentOutcome[]> myFuncVit = (PlayerData pd) => { 
+            var obs = pd._cache.Connect()
+                .TrueForAny(x => Observable.Return<SomeStuff>(x), c => c.Data == 25)
+                .Select(b => b? new TalentAtr(ATR.VITALITY, 100) : new TalentAtr(ATR.VITALITY, 0));
+
+            var result = new TalentOutcome("Three", pd, obs);
+            return [result];
+            };
+
+alex.dict.Add(222, myFuncSwift);
+alex.dict.Add(333, myFuncVit);
+
+alex._talentCache.AddOrUpdate((222,222));
+alex._talentCache.AddOrUpdate((333,333));
 
 var one = new SomeStuff(1, 10);
 var two = new SomeStuff(2, 15);
@@ -89,7 +104,14 @@ alex._cache.AddOrUpdate(two);
 alex._cache.AddOrUpdate(three);
 alex._cache.AddOrUpdate(four);
 
-alex._talentCache.AddOrUpdate((222,222));
-alex._talentCache.AddOrUpdate((333,333));
+alex.list
 
+#!csharp
+
+alex._cache.Remove(four);
+alex.list
+
+#!csharp
+
+alex._talentCache.Remove((333,333));
 alex.list
