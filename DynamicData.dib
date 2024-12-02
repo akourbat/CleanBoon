@@ -22,6 +22,7 @@ using System;
 using DynamicData;
 using DynamicData.Aggregation;
 using DynamicData.Binding;
+//using DynamicData.Kernel;
 
 #!markdown
 
@@ -31,37 +32,47 @@ Models
 
 public record SomeStuff(int Id, int Data);
 
-public class PlayerData
+public class PlayerData : IDisposable
 {
     public SourceCache<SomeStuff, int> _cache = new SourceCache<SomeStuff, int>(s => s.Id); //Let's say it countains current buffs
-    public SourceCache<(int,int), int> _talentCache = new(t => t.Item1);
-    public Dictionary<int, Func<PlayerData, TalentOutcome[]>> dict = new();
+    public SourceCache<int, int> _talentCache = new(t => t);
+    public Dictionary<int, Func<PlayerData, TalentBase[]>> dict = new();
 
     public ReadOnlyObservableCollection<TalentOutcome> list;
 
     public PlayerData()
     {
-        this._talentCache.Connect()
-            .TransformMany(t => this.dict[t.Item1].Invoke(this), c => c.ID)
+        this.sub = this._talentCache.Connect()
+            .TransformMany(t => this.dict[t].Invoke(this), c => c.ID)
+            .Filter(x => x.Type == TALENT_TYPE.ATR)
+            .Cast(x => (TalentOutcome)x)
             .AutoRefresh(x => x.Value)
             .Bind(out this.list)
             .DisposeMany()
             .Subscribe();
     }
+    IDisposable sub;
+    public void Dispose() => this.sub.Dispose();
 }
 
 public enum ATR {VITALITY, TOUGHNESS, POWER, PRECISION, CONDI_DMG, EXPERTISE, CONCENTRATION, SPEED};
+public enum TALENT_TYPE {ATR, ABILITY}
 public record TalentAtr( ATR Atr, int Value);
 
-public class TalentOutcome: AbstractNotifyPropertyChanged, IDisposable
+public abstract class TalentBase: AbstractNotifyPropertyChanged 
+{   
+    public string ID {get; init;}
+    public TALENT_TYPE Type {get; init;}
+}
+public class TalentOutcome: TalentBase, IDisposable
 {
-    public string ID {get; set;}
     private TalentAtr _value;
     public TalentAtr Value { get => _value; set => SetAndRaise(ref _value, value); }
     
-    public TalentOutcome(string Id, PlayerData data, IObservable<TalentAtr> obs)
+    public TalentOutcome(string Id, IObservable<TalentAtr> obs)
     {       
         this.ID = Id;
+        this.Type = TALENT_TYPE.ATR;
         this.sub = obs.Subscribe(x => this.Value = x);
     }
     IDisposable sub;
@@ -70,36 +81,65 @@ public class TalentOutcome: AbstractNotifyPropertyChanged, IDisposable
 
 var alex = new PlayerData();
 
-Func<PlayerData, TalentOutcome[]> myFuncSwift = (PlayerData pd) => {
+Func<PlayerData, TalentBase[]> myFuncDouble = (PlayerData pd) => {
             var obs = pd._cache.Connect()
                 .StartWithEmpty()
                 .Count();
                 
-            var result1 = new TalentOutcome("One", pd, obs.Select(c => new TalentAtr(ATR.SPEED, c*5)));
-            var result2 = new TalentOutcome("Two", pd, obs.Select(c => new TalentAtr(ATR.EXPERTISE, c*2)));
+            var result1 = new TalentOutcome("One", obs.Select(c => new TalentAtr(ATR.SPEED, c*5)));
+            var result2 = new TalentOutcome("Two", obs.Select(c => new TalentAtr(ATR.POWER, c*2)));
             return [result1, result2];
             };
                 
-Func<PlayerData, TalentOutcome[]> myFuncVit = (PlayerData pd) => { 
+Func<PlayerData, TalentBase[]> myFuncAny = (PlayerData pd) => { 
             var obs = pd._cache.Connect()
                 .TrueForAny(x => Observable.Return<SomeStuff>(x), c => c.Data == 25)
-                .Select(b => b? new TalentAtr(ATR.VITALITY, 100) : new TalentAtr(ATR.VITALITY, 0));
+                .Select(b => new TalentAtr(ATR.VITALITY, 100 * Convert.ToInt32(b)));
 
-            var result = new TalentOutcome("Three", pd, obs);
+            var result = new TalentOutcome("Three", obs);
             return [result];
             };
 
-alex.dict.Add(222, myFuncSwift);
-alex.dict.Add(333, myFuncVit);
+Func<PlayerData, TalentBase[]> myFuncWatch = (PlayerData pd) => { 
+            var obs = pd._cache.Connect()
+                .WatchValue(3)
+                .Select(b => new TalentAtr(ATR.TOUGHNESS, 2 * b.Data))
+                .StartWith(new TalentAtr(ATR.TOUGHNESS, 0));
 
-alex._talentCache.AddOrUpdate((222,222));
-alex._talentCache.AddOrUpdate((333,333));
+            var result = new TalentOutcome("Four", obs);
+            return [result];
+            };
+Func<PlayerData, TalentBase[]> myFuncDuoWatch = (PlayerData pd) => { 
+            var obs1 = pd._cache.Connect()
+                .WatchValue(1);
+            var obs2 = pd._cache.Connect()
+                .WatchValue(2);
+            
+            var obsFinal = obs1.CombineLatest(obs2)
+                .Select(x => new TalentAtr(ATR.CONDI_DMG, (x.Item1.Data + x.Item2.Data)))
+                .StartWith(new TalentAtr(ATR.CONDI_DMG, 0)); // StartWith necessity - to clarify
+
+            var result = new TalentOutcome("Five", obsFinal);
+            return [result];
+            };
+
+
+alex.dict.Add(222, myFuncDouble);
+alex.dict.Add(333, myFuncAny);
+alex.dict.Add(444, myFuncWatch);
+alex.dict.Add(555, myFuncDuoWatch);
+
+alex._talentCache.AddOrUpdate(222);
+alex._talentCache.AddOrUpdate(333);
+alex._talentCache.AddOrUpdate(444);
+alex._talentCache.AddOrUpdate(555);
 
 var one = new SomeStuff(1, 10);
 var two = new SomeStuff(2, 15);
 var three = new SomeStuff(3, 20);
 var four = new SomeStuff(4, 25);
-alex._cache.AddOrUpdate(one);
+
+//alex._cache.AddOrUpdate(one);
 alex._cache.AddOrUpdate(two);
 alex._cache.AddOrUpdate(three);
 alex._cache.AddOrUpdate(four);
@@ -108,10 +148,10 @@ alex.list
 
 #!csharp
 
-alex._cache.Remove(four);
+alex._cache.AddOrUpdate(one);
 alex.list
 
 #!csharp
 
-alex._talentCache.Remove((333,333));
+alex._cache.Remove(two);
 alex.list
