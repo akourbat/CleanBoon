@@ -22,7 +22,9 @@ using System;
 using DynamicData;
 using DynamicData.Aggregation;
 using DynamicData.Binding;
-//using DynamicData.Kernel;
+// using DynamicData.Kernel;
+// using DynamicData.Internal;
+// using DynamicData.Cache.Internal;
 
 #!markdown
 
@@ -44,8 +46,9 @@ public class PlayerData : IDisposable
     {
         this.sub = this._talentCache.Connect()
             .TransformMany(t => this.dict[t].Invoke(this), c => c.ID)
-            .Filter(x => x.Type == TALENT_TYPE.ATR)
-            .Cast(x => (TalentOutcome)x)
+            .OfType<TalentBase, string, TalentOutcome>()
+            //.Filter(x => x.Type == TALENT_TYPE.ATR)
+            //.Cast(x => (TalentOutcome)x)
             .AutoRefresh(x => x.Value)
             .Bind(out this.list)
             .DisposeMany()
@@ -62,7 +65,7 @@ public record TalentAtr( ATR Atr, int Value);
 public abstract class TalentBase: AbstractNotifyPropertyChanged 
 {   
     public string ID {get; init;}
-    public TALENT_TYPE Type {get; init;}
+    public TALENT_TYPE Type {get; init;} // Maybe not needed
 }
 public class TalentOutcome: TalentBase, IDisposable
 {
