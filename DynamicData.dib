@@ -10,21 +10,20 @@ Usings
 
 #r "nuget: System.Reactive, 6.0.1"
 #r "nuget: System.Reactive.Linq, 6.0.1"
+#r "nuget: Microsoft.Reactive.Testing, 6.0.1"
 #r "nuget: DynamicData"
 using System.Reactive;
+using System.Reactive.Subjects;
 using System.Collections;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Reactive.Linq;
 using System.Reactive.Concurrency;
-//using Microsoft.Reactive.Testing;
+using Microsoft.Reactive.Testing;
 using System;
 using DynamicData;
 using DynamicData.Aggregation;
 using DynamicData.Binding;
-// using DynamicData.Kernel;
-// using DynamicData.Internal;
-// using DynamicData.Cache.Internal;
 
 #!markdown
 

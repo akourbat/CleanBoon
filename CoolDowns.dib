@@ -1,0 +1,166 @@
+#!meta
+
+{"kernelInfo":{"defaultKernelName":"csharp","items":[{"aliases":[],"languageName":"csharp","name":"csharp"}]}}
+
+#!csharp
+
+#r "nuget: System.Reactive, 6.0.1"
+#r "nuget: System.Reactive.Linq, 6.0.1"
+#r "nuget: Microsoft.Reactive.Testing, 6.0.1"
+#r "nuget: DynamicData"
+using System.Reactive;
+using System.Reactive.Subjects;
+using System.Collections;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Reactive.Linq;
+using System.Reactive.Concurrency;
+using Microsoft.Reactive.Testing;
+using System;
+using DynamicData;
+using DynamicData.Aggregation;
+using DynamicData.Binding;
+
+#!csharp
+
+public enum Act {ADD, REMOVE};
+public enum BOON {ALACRITY, MIGHT, FURY} ;
+
+var tsAlac = new TestScheduler();
+
+public Accum ApplyAlacrity(Accum acc, TimeInterval<int> alac)
+{
+    var elapsed = Convert.ToInt32(alac.Interval.TotalMilliseconds);
+    var maxReduction = Convert.ToInt32(acc.BaseCD * 0.25);
+    acc.AccumulatedPeriod += elapsed;
+
+    if (alac.Value == 0) {
+        var balanceReduced = acc.AlacBalance - elapsed; // i.e. how much needs to be returned back to base for CD calculation
+        var alacIncrement = alac.Value - balanceReduced; // should be negative value, as alac.Value = 0
+        var incrementalReduction = Convert.ToInt32(alacIncrement * 0.25); // calculate negative CD reduction (i.e and increase in CD)
+
+        acc.AlacBalance = 0;
+        acc.AjustedCD -= (incrementalReduction + elapsed);
+        acc.AdjustmentMS += incrementalReduction;  // contains the remainder, i.e net increment after deduction
+        return acc;
+    }
+    else {
+        var balanceReduced = (acc.AlacBalance - elapsed) < 0 ? 0 : acc.AlacBalance - elapsed; // check if overlap
+        var alacIncrement = (alac.Value - balanceReduced) >= (acc.BaseCD - acc.AccumulatedPeriod)? (acc.BaseCD - acc.AccumulatedPeriod) : (alac.Value - balanceReduced);
+        var incrementalReduction = Convert.ToInt32(alacIncrement * 0.25);
+
+        acc.AlacBalance = alacIncrement;
+        acc.AjustedCD -= (incrementalReduction + elapsed);
+        acc.AdjustmentMS += incrementalReduction;
+        return acc;
+    }
+}
+
+public class Accum
+{
+    public int AlacBalance {get; set;} = 0;
+    public int AccumulatedPeriod {get; set; } = 0;
+    public int AjustedCD {get; set;} = 0;
+    public int BaseCD { get; set; } = 0;
+    public int AdjustmentMS {get; set;} = 0;
+}
+var initial = new Accum(){ AjustedCD = 20000, BaseCD = 20000 };
+
+var alactObs = tsAlac.CreateColdObservable(
+    new Recorded<Notification<int>>(TimeSpan.FromSeconds(0).Ticks, Notification.CreateOnNext(7000)),
+    //new Recorded<Notification<int>>(TimeSpan.FromSeconds(3).Ticks, Notification.CreateOnNext(0)),
+    new Recorded<Notification<int>>(TimeSpan.FromSeconds(4).Ticks, Notification.CreateOnNext(5000)),
+    new Recorded<Notification<int>>(TimeSpan.FromSeconds(10).Ticks, Notification.CreateOnNext(10000)));
+
+var delay = alactObs.StartWith(0).TimeInterval(tsAlac).Scan(initial, (acc, alac) => ApplyAlacrity(acc, alac))  
+        //.Select(x => x.Display());
+        .Select(x => Observable.Return(Unit.Default).Delay(TimeSpan.FromMilliseconds(x.AjustedCD), tsAlac))
+        .Switch();
+
+//var testFObserver = tsAlac.Start(() => delay, 0L, 200L, TimeSpan.FromSeconds(35).Ticks);
+
+
+var source = tsAlac.CreateColdObservable(
+    new Recorded<Notification<(int, int)>>(300, Notification.CreateOnNext((111, 2))), // <- (111,2) means AbilityID = 111, Coolddown = 2 sec
+    new Recorded<Notification<(int, int)>>(TimeSpan.FromSeconds(2).Ticks, Notification.CreateOnNext((222, 5))),
+    new Recorded<Notification<(int, int)>>(TimeSpan.FromSeconds(2.25).Ticks, Notification.CreateOnNext((333, 3))),
+    new Recorded<Notification<(int, int)>>(TimeSpan.FromSeconds(4).Ticks, Notification.CreateOnNext((444, 4))));
+
+var filter = source.Select(x => Observable.Return((x.Item1, Act.ADD))
+                        .Concat(Observable.Return((x.Item1, Act.REMOVE))
+                            .Delay(t => alactObs.StartWith(0)
+                                .TimeInterval(tsAlac).Scan(new Accum {BaseCD = (x.Item2*1000), AjustedCD = (x.Item2*1000)},
+                                (acc, alac) => ApplyAlacrity(acc, alac))  
+                                .Select(a => Observable.Return(Unit.Default).Delay(TimeSpan.FromMilliseconds(a.AjustedCD), tsAlac))
+                                .Switch())))
+                    .SelectMany(x => x)
+                    .Scan(new List<int>(), (acc, item) => {
+                                if(item.Item2 == Act.ADD) { acc.Add(item.Item1); return acc;}
+                                else { acc.Remove(item.Item1); return acc;}})
+                    .Select(x => x.ToArray());
+
+var testFObserver2 = tsAlac.Start(() => filter, 0L, 200L, TimeSpan.FromSeconds(25).Ticks);
+tsAlac.Start(() => alactObs, 0L, 200L, TimeSpan.FromSeconds(25).Ticks);
+testFObserver2.Messages
+
+#!csharp
+
+var groupTS = new TestScheduler();
+
+public Accum ApplyAlacrity(Accum acc, TimeInterval<int> alac)
+{
+        var elapsed = Convert.ToInt32(alac.Interval.TotalMilliseconds);
+        var maxReduction = Convert.ToInt32(acc.BaseCD * 0.25);
+        acc.AccumulatedPeriod += elapsed;
+
+        if (alac.Value == 0) {
+            var balanceReduced = acc.AlacBalance - elapsed; // i.e. how much needs to be returned back to base for CD calculation
+            var alacIncrement = alac.Value - balanceReduced; // should be negative value, as alac.Value = 0
+            var incrementalReduction = Convert.ToInt32(alacIncrement * 0.25); // calculate negative CD reduction (i.e and increase in CD)
+
+            acc.AlacBalance = 0;
+            acc.AjustedCD -= (incrementalReduction + elapsed);
+            acc.AdjustmentMS += incrementalReduction;  // contains the remainder, i.e net increment after deduction
+            return acc;
+        }
+        else {
+            var balanceReduced = (acc.AlacBalance - elapsed) < 0 ? 0 : acc.AlacBalance - elapsed; // check if overlap
+            var alacIncrement = (alac.Value - balanceReduced) >= (acc.BaseCD - acc.AccumulatedPeriod)? (acc.BaseCD - acc.AccumulatedPeriod) : (alac.Value - balanceReduced);
+            var incrementalReduction = Convert.ToInt32(alacIncrement * 0.25);
+
+            acc.AlacBalance = alacIncrement;
+            acc.AjustedCD -= (incrementalReduction + elapsed);
+            acc.AdjustmentMS += incrementalReduction;
+            return acc;
+        }
+    }
+
+var sourceGroup = groupTS.CreateColdObservable(
+    new Recorded<Notification<(int, int)>>(300, Notification.CreateOnNext((111, 2))), // <- (111,2) means AbilityID = 111, Coolddown = 2 sec
+    new Recorded<Notification<(int, int)>>(TimeSpan.FromSeconds(2).Ticks, Notification.CreateOnNext((222, 5))),
+    new Recorded<Notification<(int, int)>>(TimeSpan.FromSeconds(2.25).Ticks, Notification.CreateOnNext((333, 3))),
+    new Recorded<Notification<(int, int)>>(TimeSpan.FromSeconds(4).Ticks, Notification.CreateOnNext((444, 4))));
+
+var alacGroup = groupTS.CreateColdObservable(
+    new Recorded<Notification<int>>(TimeSpan.FromSeconds(2).Ticks, Notification.CreateOnNext(7000)), 
+    new Recorded<Notification<int>>(TimeSpan.FromSeconds(5).Ticks, Notification.CreateOnNext(0)),
+    new Recorded<Notification<int>>(TimeSpan.FromSeconds(6).Ticks, Notification.CreateOnNext(5000)),
+    new Recorded<Notification<int>>(TimeSpan.FromSeconds(10).Ticks, Notification.CreateOnNext(12000)));
+
+
+var joined = sourceGroup.GroupJoin(alacGroup, left => left.Item2, right => Observable.Empty<Unit>(), (left, right) =>
+                                Observable.Return((left.Item1, Act.ADD))
+                                .Concat(Observable.Never<(int, Act)>()
+                                        .TakeUntil(right.StartWith(0)
+                                                .TimeInterval(groupTS)
+                                                .Scan(new Accum() {AjustedCD = left.Item2 * 1000, BaseCD = left.Item2 * 1000},
+                                                (acc, alac) => ApplyAlacrity(acc, alac))
+                                                .Select(x => Observable.Return(Unit.Default)
+                                                    .Delay(TimeSpan.FromMilliseconds(x.AjustedCD), groupTS))
+                                                .Switch())
+                                        .Concat(Observable.Return((left.Item1, Act.REMOVE)))))
+                        .SelectMany(x => x)
+                        .Scan(new List<int>(), (acc, item) => {
+                                                if(item.Item2 == Act.ADD) { acc.Add(item.Item1); return acc;}
+                                                else { acc.Remove(item.Item1); return acc;}})
+                        .Select(x => x.ToArray());
