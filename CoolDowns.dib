@@ -117,105 +117,100 @@ public class Accum
 {
     public int AlacBalance {get; set;} = 0;
     public DateTimeOffset AccTime {get; set; }
-    public DateTimeOffset AbilityTS {get; init; }
     public int AccumulatedPeriod {get; set; } = 0;
     public int AjustedCD {get; set;} = 0;
     public int BaseCD { get; init; }
     public int AdjustmentMS {get; set;} = 0;
     public int MaxAdj => (int)(this.BaseCD * 0.25);
 
-    public Accum(int baseCoolDown, DateTimeOffset now, DateTimeOffset abilityTime)
+    public Accum(int baseCoolDown, DateTimeOffset now)
     {
         this.BaseCD = baseCoolDown;
         this.AjustedCD = baseCoolDown;
         this.AccTime = now;
-        this.AbilityTS = abilityTime;
     }
 }
 
 public Accum ApplyAlacrity1(Accum acc, Timestamped<int> alac)
 {
-        var periodSinceAilityStart = Convert.ToInt32((alac.Timestamp - acc.AbilityTS).TotalMilliseconds);
-        //periodSinceAilityStart.Display();
         var elapsedFromLastAlac = Convert.ToInt32((alac.Timestamp - acc.AccTime).TotalMilliseconds);
-        //elapsedFromLastAlac.Display();
-
-        // Case: First Alac pulse preceeds the ability window
-        if (alac.Timestamp < acc.AbilityTS)
+        //Case: Alac pulse preceeds the ability window
+        if (alac.Timestamp < acc.AccTime)
         {
-            var periodBefore = (int)((acc.AbilityTS - alac.Timestamp).TotalMilliseconds);
+            var periodBefore = (int)((acc.AccTime - alac.Timestamp).TotalMilliseconds);
             var carry = (alac.Value - periodBefore) < 0 ? 0 : (alac.Value - periodBefore);
             carry = carry > acc.AjustedCD ? acc.AjustedCD : carry;
-            
+            var adjustment = Convert.ToInt32(carry * 0.25);
+            //adjustment.Display();
             if (carry > 0) {
                 acc.AlacBalance = carry;
-                acc.AjustedCD -= Convert.ToInt32(carry * 0.25);
+                acc.AjustedCD -= adjustment;
                 acc.AdjustmentMS += Convert.ToInt32(carry * 0.25);
                 acc.AccumulatedPeriod = 0;
             }
-            acc.AccTime = groupTS.Now;
+            // var dis = acc.AjustedCD;
+            // dis.Display();
+            
             return acc;
         }
-        else if (alac.Value == 0) //Case: Alac Dispell or Corruption
+        else if (alac.Value == 0) //Case: Alac Dispell or Corruption (or just expiry)
         {
             var carry = acc.AlacBalance - elapsedFromLastAlac;
             carry = carry > 0 ? carry : 0;
-            var adjustment = elapsedFromLastAlac - (Convert.ToInt32(carry * 0.25));
+            var increment = (Convert.ToInt32(carry * 0.25));
             acc.AlacBalance = 0;
-            acc.AjustedCD -= adjustment;
-            acc.AdjustmentMS -= Convert.ToInt32(carry * 0.25);
+            acc.AjustedCD -= elapsedFromLastAlac;
+            acc.AjustedCD += increment;
+            acc.AdjustmentMS -= increment;
             acc.AccumulatedPeriod += elapsedFromLastAlac;
             acc.AccTime = alac.Timestamp;
             return acc;
         }
         else {
-              
-            var carry = alac.Value - acc.AlacBalance - elapsedFromLastAlac;
-            carry = carry > acc.AjustedCD ? acc.AjustedCD : carry;
-            
-            var adjustment = Convert.ToInt32(carry * 0.25);
-            if (carry <= 0){
-                acc.AlacBalance = 0;
-            }
-            else{
-                acc.AlacBalance = carry;
-                adjustment = (acc.AdjustmentMS + adjustment) < acc.MaxAdj ? adjustment : (acc.MaxAdj - acc.AdjustmentMS);
-            }
-            acc.AjustedCD -= (adjustment + elapsedFromLastAlac);
-            acc.AdjustmentMS += adjustment;
+            var alacFromLast = (acc.AlacBalance - elapsedFromLastAlac) > 0 ? (acc.AlacBalance - elapsedFromLastAlac) : 0; //already applied by prevoius
+            var carry = (alac.Value > alacFromLast) ? (alac.Value - alacFromLast) : alacFromLast; // re-adjisted any alac seconds
+            var remaining = acc.AjustedCD -= elapsedFromLastAlac;
+            carry = carry > remaining ? remaining : carry; // should not apply more alac seconds then remains of CD
+            var increment = Convert.ToInt32(carry * 0.25);  // alac contribution from these from new seconds
+            var actual = acc.AjustedCD - increment > 0 ? increment : acc.AjustedCD;  //checking for not reducing cd to negative, but to zero instead.
+
+            acc.AlacBalance = carry;
+            acc.AjustedCD -= actual;
+            acc.AdjustmentMS += increment;
             acc.AccumulatedPeriod += elapsedFromLastAlac;
             acc.AccTime = alac.Timestamp;
+
             return acc;
         }
     }
 
 var sourceGroup = groupTS.CreateHotObservable(
-    new Recorded<Notification<(int, int)>>(TimeSpan.FromSeconds(1.5).Ticks, Notification.CreateOnNext((111, 3))), // <- (111,2) means AbilityID = 111, Coolddown = 2 sec
-    new Recorded<Notification<(int, int)>>(TimeSpan.FromSeconds(2.5).Ticks, Notification.CreateOnNext((222, 4))),
-    new Recorded<Notification<(int, int)>>(TimeSpan.FromSeconds(3.5).Ticks, Notification.CreateOnNext((333, 4))),
-    new Recorded<Notification<(int, int)>>(TimeSpan.FromSeconds(4.5).Ticks, Notification.CreateOnNext((444, 6))));
+    new Recorded<Notification<(int, int)>>(TimeSpan.FromSeconds(1).Ticks, Notification.CreateOnNext((111, 2))), // <- (111,2) means AbilityID = 111, Coolddown = 2 sec
+    new Recorded<Notification<(int, int)>>(TimeSpan.FromSeconds(2).Ticks, Notification.CreateOnNext((222, 4))),
+    new Recorded<Notification<(int, int)>>(TimeSpan.FromSeconds(3).Ticks, Notification.CreateOnNext((333, 4))),
+    new Recorded<Notification<(int, int)>>(TimeSpan.FromSeconds(6).Ticks, Notification.CreateOnNext((444, 4))));
 
 var alacGroup = groupTS.CreateHotObservable(
-    new Recorded<Notification<int>>(TimeSpan.FromSeconds(0.5).Ticks, Notification.CreateOnNext(15000)),
-    //new Recorded<Notification<int>>(TimeSpan.FromSeconds(3).Ticks, Notification.CreateOnNext(0)),
-    new Recorded<Notification<int>>(TimeSpan.FromSeconds(4).Ticks, Notification.CreateOnNext(10000)));
-    //new Recorded<Notification<int>>(TimeSpan.FromSeconds(10.5).Ticks, Notification.CreateOnNext(10000)));
+    new Recorded<Notification<int>>(TimeSpan.FromSeconds(0.5).Ticks, Notification.CreateOnNext(4000)),
+    new Recorded<Notification<int>>(TimeSpan.FromSeconds(2.5).Ticks, Notification.CreateOnNext(0)),
+    new Recorded<Notification<int>>(TimeSpan.FromSeconds(3.5).Ticks, Notification.CreateOnNext(2000)),
+    new Recorded<Notification<int>>(TimeSpan.FromSeconds(5.5).Ticks, Notification.CreateOnNext(5000)));
 
 var alacGroupRef = alacGroup.StartWith(0).Timestamp(groupTS).Publish().RefCount();
-var sourceGroupRef = sourceGroup.Timestamp(groupTS).Publish().RefCount();
+var sourceGroupRef = sourceGroup.Publish().RefCount();
 
 var joined = sourceGroupRef.GroupJoin(alacGroupRef,
-                                    left => Observable.Return(1).Delay(TimeSpan.FromSeconds(left.Value.Item2), groupTS),
+                                    left => Observable.Return(Unit.Default).Delay(TimeSpan.FromSeconds(left.Item2), groupTS),
                                     right => alacGroupRef,
                                     (left, right) => new {Ability = left, AlacStream = right});
                                 
-var processed = joined.Select(x => Observable.Return((x.Ability.Value.Item1, Act.ADD))
-                            .Concat(Observable.Return((x.Ability.Value.Item1, Act.REMOVE))
+var processed = joined.Select(x => Observable.Return((x.Ability.Item1, Act.ADD))
+                            .Concat(Observable.Return((x.Ability.Item1, Act.REMOVE))
                                 .Delay(t => x.AlacStream
-                                        .Scan(new Accum(x.Ability.Value.Item2 * 1000, groupTS.Now, x.Ability.Timestamp),
+                                        .Scan(new Accum(x.Ability.Item2 * 1000, groupTS.Now),  //replace with DateTimeOffset.Now
                                             (acc, alac) => ApplyAlacrity1(acc, alac))
-                                        .TakeUntil( acc => acc.AjustedCD > 0)  
-                                        .Select(a => Observable.Return(1)
+                                        .TakeUntil(acc => acc.AjustedCD == 0)
+                                        .Select(a => Observable.Return(Unit.Default)
                                             .Delay(TimeSpan.FromMilliseconds(a.AjustedCD), groupTS))
                                         .Switch())))
                         .SelectMany(x => x)
