@@ -1,0 +1,121 @@
+#!meta
+
+{"kernelInfo":{"defaultKernelName":"csharp","items":[{"aliases":[],"languageName":"csharp","name":"csharp"}]}}
+
+#!markdown
+
+Usings and Models
+
+#!csharp
+
+#r "nuget: System.Reactive, 6.0.1"
+#r "nuget: System.Reactive.Linq, 6.0.1"
+#r "nuget: Microsoft.Reactive.Testing, 6.0.1"
+#r "nuget: DynamicData"
+using System.Reactive;
+using System.Collections;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Reactive.Linq;
+using System.Reactive.Concurrency;
+using Microsoft.Reactive.Testing;
+using System;
+using DynamicData;
+using DynamicData.Aggregation;
+using DynamicData.Binding;
+
+public enum Act {ADD, REMOVE};
+public enum BOON {ALACRITY, MIGHT, FURY};
+
+public class AccBin {
+
+    public TimeSpan AdjCD {get; set;}
+    public TimeSpan BaseCD {get;}
+    public DateTimeOffset AccTime {get; set;}
+    public int AbilityId {get;}
+    public TimeSpan Elapsed {get; set;} = TimeSpan.Zero;
+
+    public AccBin((int,int) ability, DateTimeOffset now)
+    {
+        this.AdjCD = TimeSpan.FromSeconds(ability.Item2);
+        this.BaseCD = TimeSpan.FromSeconds(ability.Item2);
+        this.AccTime = now;
+        this.AbilityId = ability.Item1;
+    }
+}
+
+#!csharp
+
+var groupTS = new TestScheduler();
+
+var sourceGroup = groupTS.CreateHotObservable(
+    new Recorded<Notification<(int, int)>>(TimeSpan.FromSeconds(1).Ticks, Notification.CreateOnNext((111, 2))), // <- (111,2) means AbilityID = 111, Coolddown = 2 sec
+    new Recorded<Notification<(int, int)>>(TimeSpan.FromSeconds(2).Ticks, Notification.CreateOnNext((222, 4))),
+    new Recorded<Notification<(int, int)>>(TimeSpan.FromSeconds(3).Ticks, Notification.CreateOnNext((333, 4))),
+    new Recorded<Notification<(int, int)>>(TimeSpan.FromSeconds(6).Ticks, Notification.CreateOnNext((444, 4))));
+
+var alacGroup = groupTS.CreateHotObservable(
+    new Recorded<Notification<int>>(TimeSpan.FromSeconds(0.5).Ticks, Notification.CreateOnNext(2000)),
+    new Recorded<Notification<int>>(TimeSpan.FromSeconds(2.5).Ticks, Notification.CreateOnNext(0)),
+    new Recorded<Notification<int>>(TimeSpan.FromSeconds(5.5).Ticks, Notification.CreateOnNext(2500)),
+    new Recorded<Notification<int>>(TimeSpan.FromSeconds(8).Ticks, Notification.CreateOnNext(0)),
+    new Recorded<Notification<int>>(TimeSpan.FromSeconds(8.5).Ticks, Notification.CreateOnNext(5000)));
+
+public AccBin ApplyAlac(AccBin acc, Timestamped<bool> alac)
+{
+    var elapsedFromLast = alac.Timestamp.Subtract(acc.AccTime);
+
+    if(elapsedFromLast < TimeSpan.Zero)
+    {
+        var alacSpan = alac.Value ? acc.BaseCD : TimeSpan.Zero;
+        var adj = alacSpan * 0.25;
+        acc.AdjCD -= adj;
+        return acc;
+    }
+    else
+    {
+        acc.AdjCD -= elapsedFromLast;
+        acc.Elapsed += elapsedFromLast;
+        acc.AccTime = alac.Timestamp;
+        var cdRemaining = acc.BaseCD - acc.Elapsed;
+        var adj = cdRemaining * 0.25;
+        if(alac.Value){
+            acc.AdjCD -= adj;
+            if (acc.AdjCD < TimeSpan.Zero) acc.AdjCD = TimeSpan.Zero;
+            acc.AccTime = alac.Timestamp;
+        }
+        else{
+            acc.AdjCD += adj;
+        }
+        return acc;
+    }
+}
+public IObservable<(int,Act)> ComputeCooldown(IObservable<Timestamped<bool>> obs, (int, int) ability)
+{
+    var first = Observable.Return((ability.Item1, Act.ADD));
+    var last =  obs.Scan(new AccBin(ability, groupTS.Now), (acc, alacBool) => ApplyAlac(acc, alacBool))
+                .TakeUntil(acc => acc.AdjCD == TimeSpan.Zero)
+                .Select(a => Observable.Return((ability.Item1, Act.REMOVE))
+                                       .Delay(a.AdjCD, groupTS))
+                .Switch();
+    return first.Concat(last);
+}
+
+var sourceGroupRef = sourceGroup.Publish().RefCount();
+var alacBinary = alacGroup.StartWith(0).Select(x => x > 0 ? true : false).DistinctUntilChanged().Timestamp(groupTS).Publish().RefCount();
+
+var joinedBinary = sourceGroupRef.GroupJoin(alacBinary,
+                                    left => Observable.Return(Unit.Default).Delay(TimeSpan.FromSeconds(left.Item2), groupTS),
+                                    right => alacBinary,
+                                    (left, right) => new {Ability = left, BooleanStream = right});
+
+var processedBinary = joinedBinary
+                        .Select(x => ComputeCooldown(x.BooleanStream, x.Ability))
+                        .SelectMany(x => x)
+                        .Scan(new List<int>(), (acc, item) => {
+                                                if(item.Item2 == Act.ADD) { acc.Add(item.Item1); return acc;}
+                                                else { acc.Remove(item.Item1); return acc;}})
+                        .Select(x => x.ToArray());;
+
+var groupedObserver = groupTS.Start(() => processedBinary, 0L, 200L, TimeSpan.FromSeconds(100).Ticks);
+groupedObserver.Messages

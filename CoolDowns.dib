@@ -141,16 +141,11 @@ public Accum ApplyAlacrity1(Accum acc, Timestamped<int> alac)
             var carry = (alac.Value - periodBefore) < 0 ? 0 : (alac.Value - periodBefore);
             carry = carry > acc.AjustedCD ? acc.AjustedCD : carry;
             var adjustment = Convert.ToInt32(carry * 0.25);
-            //adjustment.Display();
             if (carry > 0) {
                 acc.AlacBalance = carry;
                 acc.AjustedCD -= adjustment;
-                acc.AdjustmentMS += Convert.ToInt32(carry * 0.25);
-                acc.AccumulatedPeriod = 0;
+                acc.AdjustmentMS += adjustment;
             }
-            // var dis = acc.AjustedCD;
-            // dis.Display();
-            
             return acc;
         }
         else if (alac.Value == 0) //Case: Alac Dispell or Corruption (or just expiry)
@@ -166,17 +161,17 @@ public Accum ApplyAlacrity1(Accum acc, Timestamped<int> alac)
             acc.AccTime = alac.Timestamp;
             return acc;
         }
-        else {
+        else { // All other cases
             var alacFromLast = (acc.AlacBalance - elapsedFromLastAlac) > 0 ? (acc.AlacBalance - elapsedFromLastAlac) : 0; //already applied by prevoius
             var carry = (alac.Value > alacFromLast) ? (alac.Value - alacFromLast) : alacFromLast; // re-adjisted any alac seconds
-            var remaining = acc.AjustedCD -= elapsedFromLastAlac;
-            carry = carry > remaining ? remaining : carry; // should not apply more alac seconds then remains of CD
-            var increment = Convert.ToInt32(carry * 0.25);  // alac contribution from these from new seconds
-            var actual = acc.AjustedCD - increment > 0 ? increment : acc.AjustedCD;  //checking for not reducing cd to negative, but to zero instead.
+            var remainingCd = acc.AjustedCD -= elapsedFromLastAlac;
+            carry = carry > remainingCd ? remainingCd : carry; // should not apply more alac seconds then remains of CD
+            var decrement = Convert.ToInt32(carry * 0.25);  // alac contribution from these from new seconds
+            var actual = acc.AjustedCD - decrement > 0 ? decrement : acc.AjustedCD;  //checking for not reducing cd to negative, but to zero instead.
 
             acc.AlacBalance = carry;
             acc.AjustedCD -= actual;
-            acc.AdjustmentMS += increment;
+            acc.AdjustmentMS += decrement;
             acc.AccumulatedPeriod += elapsedFromLastAlac;
             acc.AccTime = alac.Timestamp;
 
@@ -191,10 +186,11 @@ var sourceGroup = groupTS.CreateHotObservable(
     new Recorded<Notification<(int, int)>>(TimeSpan.FromSeconds(6).Ticks, Notification.CreateOnNext((444, 4))));
 
 var alacGroup = groupTS.CreateHotObservable(
-    new Recorded<Notification<int>>(TimeSpan.FromSeconds(0.5).Ticks, Notification.CreateOnNext(4000)),
+    new Recorded<Notification<int>>(TimeSpan.FromSeconds(0.5).Ticks, Notification.CreateOnNext(14000)),
     new Recorded<Notification<int>>(TimeSpan.FromSeconds(2.5).Ticks, Notification.CreateOnNext(0)),
-    new Recorded<Notification<int>>(TimeSpan.FromSeconds(3.5).Ticks, Notification.CreateOnNext(2000)),
-    new Recorded<Notification<int>>(TimeSpan.FromSeconds(5.5).Ticks, Notification.CreateOnNext(5000)));
+    new Recorded<Notification<int>>(TimeSpan.FromSeconds(5.5).Ticks, Notification.CreateOnNext(3500)),
+    new Recorded<Notification<int>>(TimeSpan.FromSeconds(8).Ticks, Notification.CreateOnNext(0)),
+    new Recorded<Notification<int>>(TimeSpan.FromSeconds(8.5).Ticks, Notification.CreateOnNext(5000)));
 
 var alacGroupRef = alacGroup.StartWith(0).Timestamp(groupTS).Publish().RefCount();
 var sourceGroupRef = sourceGroup.Publish().RefCount();
@@ -209,7 +205,7 @@ var processed = joined.Select(x => Observable.Return((x.Ability.Item1, Act.ADD))
                                 .Delay(t => x.AlacStream
                                         .Scan(new Accum(x.Ability.Item2 * 1000, groupTS.Now),  //replace with DateTimeOffset.Now
                                             (acc, alac) => ApplyAlacrity1(acc, alac))
-                                        .TakeUntil(acc => acc.AjustedCD == 0)
+                                        .TakeUntil(acc => acc.AjustedCD <= 0)
                                         .Select(a => Observable.Return(Unit.Default)
                                             .Delay(TimeSpan.FromMilliseconds(a.AjustedCD), groupTS))
                                         .Switch())))
@@ -219,11 +215,79 @@ var processed = joined.Select(x => Observable.Return((x.Ability.Item1, Act.ADD))
                                                 else { acc.Remove(item.Item1); return acc;}})
                         .Select(x => x.ToArray());
 
-var groupedObserver = groupTS.Start(() => processed, 0L, 200L, TimeSpan.FromSeconds(100).Ticks);
+//===============================================================
+public class AccBin {
+
+    public TimeSpan AdjCD {get; set;}
+    public TimeSpan BaseCD {get;}
+    public DateTimeOffset AccTime {get; set;}
+    public int AbilityId {get;}
+    public TimeSpan Elapsed {get; set;} = TimeSpan.Zero;
+
+    public AccBin((int,int) ability, DateTimeOffset now)
+    {
+        this.AdjCD = TimeSpan.FromSeconds(ability.Item2);
+        this.BaseCD = TimeSpan.FromSeconds(ability.Item2);
+        this.AccTime = now;
+        this.AbilityId = ability.Item1;
+    }
+}
+
+public AccBin ApplyAlac2(AccBin acc, Timestamped<bool> alac)
+{
+    var elapsedFromLast = alac.Timestamp.Subtract(acc.AccTime);
+
+    if(elapsedFromLast < TimeSpan.Zero)
+    {
+        var alacSpan = alac.Value == true ? acc.BaseCD : TimeSpan.Zero;
+        var adj = alacSpan * 0.25;
+        acc.AdjCD -= adj;
+        return acc;
+    }
+    else
+    {
+        acc.AdjCD -= elapsedFromLast;
+        acc.Elapsed += elapsedFromLast;
+        acc.AccTime = alac.Timestamp;
+        var cdRemaining = acc.BaseCD - acc.Elapsed;
+        var adj = cdRemaining * 0.25;
+        if(alac.Value == true){
+            acc.AdjCD -= adj;
+            if (acc.AdjCD < TimeSpan.Zero) acc.AdjCD = TimeSpan.Zero;
+            acc.AccTime = alac.Timestamp;
+        }
+        else{
+            acc.AdjCD += adj;
+        }
+        return acc;
+    }
+}
+public IObservable<(int,Act)> ComputeCooldown(IObservable<Timestamped<bool>> obs, (int, int) ability)
+{
+    var first = Observable.Return((ability.Item1, Act.ADD));
+    var last =  obs.Scan(new AccBin(ability, groupTS.Now), (acc, alacBool) => ApplyAlac2(acc, alacBool))
+                .TakeUntil(acc => acc.AdjCD == TimeSpan.Zero)
+                .Select(a => Observable.Return((ability.Item1, Act.REMOVE))
+                                       .Delay(a.AdjCD, groupTS))
+                .Switch();
+                
+    return first.Concat(last);
+}
+
+var alacBinary = alacGroup.StartWith(0).Select(x => x > 0 ? true : false).DistinctUntilChanged().Timestamp(groupTS).Publish().RefCount();
+
+var joinedBinary = sourceGroupRef.GroupJoin(alacBinary,
+                                    left => Observable.Return(Unit.Default).Delay(TimeSpan.FromSeconds(left.Item2), groupTS),
+                                    right => alacBinary,
+                                    (left, right) => new {Ability = left, BooleanStream = right});
+
+var processedBinary = joinedBinary
+                        .Select(x => ComputeCooldown(x.BooleanStream, x.Ability))
+                        .SelectMany(x => x)
+                        .Scan(new List<int>(), (acc, item) => {
+                                                if(item.Item2 == Act.ADD) { acc.Add(item.Item1); return acc;}
+                                                else { acc.Remove(item.Item1); return acc;}})
+                        .Select(x => x.ToArray());;
+
+var groupedObserver = groupTS.Start(() => processedBinary, 0L, 200L, TimeSpan.FromSeconds(100).Ticks);
 groupedObserver.Messages
-
-#!csharp
-
-var scheduleTimeTest = new TestScheduler();
-
-scheduleTimeTest.Now.Display();
