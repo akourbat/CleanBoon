@@ -79,6 +79,7 @@ public AccBin ApplyAlac(AccBin acc, Timestamped<bool> alac)
         acc.AccTime = alac.Timestamp;
         var cdRemaining = acc.BaseCD - acc.Elapsed;
         var adj = cdRemaining * 0.25;
+
         if(alac.Value){
             acc.AdjCD -= adj;
             if (acc.AdjCD < TimeSpan.Zero) acc.AdjCD = TimeSpan.Zero;
@@ -94,10 +95,10 @@ public IObservable<(int,Act)> ComputeCooldown(IObservable<Timestamped<bool>> obs
 {
     var first = Observable.Return((ability.Item1, Act.ADD));
     var last =  obs.Scan(new AccBin(ability, groupTS.Now), (acc, alacBool) => ApplyAlac(acc, alacBool))
-                .TakeUntil(acc => acc.AdjCD == TimeSpan.Zero)
-                .Select(a => Observable.Return((ability.Item1, Act.REMOVE))
-                                       .Delay(a.AdjCD, groupTS))
-                .Switch();
+                    .TakeUntil(acc => acc.AdjCD == TimeSpan.Zero)
+                    .Select(a => Observable.Return((ability.Item1, Act.REMOVE))
+                        .Delay(a.AdjCD, groupTS))
+                    .Switch();
     return first.Concat(last);
 }
 
@@ -105,17 +106,32 @@ var sourceGroupRef = sourceGroup.Publish().RefCount();
 var alacBinary = alacGroup.StartWith(0).Select(x => x > 0 ? true : false).DistinctUntilChanged().Timestamp(groupTS).Publish().RefCount();
 
 var joinedBinary = sourceGroupRef.GroupJoin(alacBinary,
-                                    left => Observable.Return(Unit.Default).Delay(TimeSpan.FromSeconds(left.Item2), groupTS),
-                                    right => alacBinary,
-                                    (left, right) => new {Ability = left, BooleanStream = right});
+                        left => Observable.Return(Unit.Default).Delay(TimeSpan.FromSeconds(left.Item2), groupTS),
+                        right => alacBinary,
+                        (left, right) => new {Ability = left, BooleanStream = right});
 
 var processedBinary = joinedBinary
                         .Select(x => ComputeCooldown(x.BooleanStream, x.Ability))
                         .SelectMany(x => x)
                         .Scan(new List<int>(), (acc, item) => {
-                                                if(item.Item2 == Act.ADD) { acc.Add(item.Item1); return acc;}
-                                                else { acc.Remove(item.Item1); return acc;}})
+                                if(item.Item2 == Act.ADD) { acc.Add(item.Item1); return acc;}
+                                else { acc.Remove(item.Item1); return acc;}})
                         .Select(x => x.ToArray());;
 
-var groupedObserver = groupTS.Start(() => processedBinary, 0L, 200L, TimeSpan.FromSeconds(100).Ticks);
+// ====== Dynamic Filtering ===========
+
+var predicateObs = processedBinary.Select(CreatePredicate);
+
+public Func<(int, int),bool> CreatePredicate(int[] cooldowns)
+{
+    return ability => !cooldowns.Contains(ability.Item1);
+}
+
+ReadOnlyObservableCollection<(int, int)> result;
+var abilityCache = new SourceCache<(int,int), int>(x => x.Item1);
+var abils = new [] {(111, 2), (222, 4), (333, 4), (444, 4), (555, 3)};
+abilityCache.AddOrUpdate(abils);
+var filtered = abilityCache.Connect().Filter(predicateObs).Bind(out result);
+
+var groupedObserver = groupTS.Start(() => filtered, 0L, 200L, TimeSpan.FromSeconds(100).Ticks);
 groupedObserver.Messages
