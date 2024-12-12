@@ -131,7 +131,8 @@ ReadOnlyObservableCollection<(int, int)> result;
 var abilityCache = new SourceCache<(int,int), int>(x => x.Item1);
 var abils = new [] {(111, 2), (222, 4), (333, 4), (444, 4), (555, 3)};
 abilityCache.AddOrUpdate(abils);
-var filtered = abilityCache.Connect().Filter(predicateObs).Bind(out result);
+var filtered = abilityCache.Connect().Filter(predicateObs).AsObservableCache();
+var example = filtered.Connect().Bind(out result);
 
-var groupedObserver = groupTS.Start(() => filtered, 0L, 200L, TimeSpan.FromSeconds(100).Ticks);
+var groupedObserver = groupTS.Start(() => example, 0L, 200L, TimeSpan.FromSeconds(100).Ticks);
 groupedObserver.Messages
