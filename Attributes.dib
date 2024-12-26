@@ -1,3 +1,8 @@
 #!meta
 
 {"kernelInfo":{"defaultKernelName":"csharp","items":[{"aliases":[],"languageName":"csharp","name":"csharp"}]}}
+
+#!csharp
+
+#r ".\Modules\Attributes\CoreAtr\bin\Debug\net8.0\CoreAtr.dll"
+using Attributes;

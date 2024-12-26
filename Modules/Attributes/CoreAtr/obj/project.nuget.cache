@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "dgSpecHash": "gdDTITCarbg=",
+  "success": true,
+  "projectFilePath": "D:\\VS Studio\\CleanBoon\\Modules\\Attributes\\CoreAtr\\CoreAtr.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\Alexander\\.nuget\\packages\\dynamicdata\\9.0.4\\dynamicdata.9.0.4.nupkg.sha512",
+    "C:\\Users\\Alexander\\.nuget\\packages\\microsoft.reactive.testing\\6.0.1\\microsoft.reactive.testing.6.0.1.nupkg.sha512",
+    "C:\\Users\\Alexander\\.nuget\\packages\\system.reactive\\6.0.1\\system.reactive.6.0.1.nupkg.sha512"
+  ],
+  "logs": []
+}

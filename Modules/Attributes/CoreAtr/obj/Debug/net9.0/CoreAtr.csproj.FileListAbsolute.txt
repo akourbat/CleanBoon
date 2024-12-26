@@ -1,0 +1,12 @@
+D:\VS Studio\CleanBoon\Modules\Attributes\CoreAtr\bin\Debug\net9.0\CoreAtr.deps.json
+D:\VS Studio\CleanBoon\Modules\Attributes\CoreAtr\bin\Debug\net9.0\CoreAtr.dll
+D:\VS Studio\CleanBoon\Modules\Attributes\CoreAtr\bin\Debug\net9.0\CoreAtr.pdb
+D:\VS Studio\CleanBoon\Modules\Attributes\CoreAtr\obj\Debug\net9.0\CoreAtr.GeneratedMSBuildEditorConfig.editorconfig
+D:\VS Studio\CleanBoon\Modules\Attributes\CoreAtr\obj\Debug\net9.0\CoreAtr.AssemblyInfoInputs.cache
+D:\VS Studio\CleanBoon\Modules\Attributes\CoreAtr\obj\Debug\net9.0\CoreAtr.AssemblyInfo.cs
+D:\VS Studio\CleanBoon\Modules\Attributes\CoreAtr\obj\Debug\net9.0\CoreAtr.csproj.CoreCompileInputs.cache
+D:\VS Studio\CleanBoon\Modules\Attributes\CoreAtr\obj\Debug\net9.0\CoreAtr.sourcelink.json
+D:\VS Studio\CleanBoon\Modules\Attributes\CoreAtr\obj\Debug\net9.0\CoreAtr.dll
+D:\VS Studio\CleanBoon\Modules\Attributes\CoreAtr\obj\Debug\net9.0\refint\CoreAtr.dll
+D:\VS Studio\CleanBoon\Modules\Attributes\CoreAtr\obj\Debug\net9.0\CoreAtr.pdb
+D:\VS Studio\CleanBoon\Modules\Attributes\CoreAtr\obj\Debug\net9.0\ref\CoreAtr.dll
